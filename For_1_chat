@@ -1,0 +1,139 @@
+#!/usr/bin/env python3
+
+def install_libraries():
+    """Устанавливает необходимые библиотеки."""
+    import subprocess
+    subprocess.check_call(["pip", "install", "pandas", "spacy", "matplotlib", "wordcloud"])
+
+def install_spacy_model():
+    """Устанавливает модель ru_core_news_sm для SpaCy."""
+    import subprocess
+    subprocess.check_call(["python", "-m", "spacy", "download", "ru_core_news_sm"])
+
+# Проверка наличия необходимых библиотек
+try:
+    import pandas as pd
+    import spacy
+    import matplotlib.pyplot as plt
+    from wordcloud import WordCloud
+    from collections import Counter
+except ImportError:
+    # Обработка исключения, если библиотеки не найдены
+    print("Некоторые необходимые библиотеки отсутствуют.")
+    choice = input("Вы хотите установить их автоматически? (y/n): ")
+    if choice.lower() == "y":
+        install_libraries()
+        # Повторный импорт после установки
+        import pandas as pd
+        import spacy
+        import matplotlib.pyplot as plt
+        from wordcloud import WordCloud
+        from collections import Counter
+        print("Устанавливаем модель ru_core_news_sm для SpaCy...")
+        install_spacy_model()
+    else:
+        print("Убедитесь, что у вас установлены: pandas, spacy, matplotlib и wordcloud.")
+        input("Нажмите Enter, чтобы выйти.")
+        exit()
+
+pd.set_option('display.max_columns', None)
+json_path = input("Введите путь к файлу JSON: ")
+
+try:
+    data = pd.read_json(json_path)
+    messages_df = pd.json_normalize(data['messages'])
+except Exception as e:
+    print(f"Ошибка при чтении файла: {e}")
+    exit()
+
+
+# Обработка и преобразование данных
+messages_df['date'] = pd.to_datetime(messages_df['date'])
+sorted_messages = messages_df.sort_values(by=['from', 'date'])
+sorted_messages['cleaned_text'] = sorted_messages['text'].astype(str).str.replace(r'[^а-яА-ЯёЁ\s]', ' ', regex=True)
+
+# Загрузка русскоязычной модели SpaCy
+nlp = spacy.load('ru_core_news_sm')
+stopwords = spacy.lang.ru.stop_words.STOP_WORDS
+
+def lemmatize_text(text):
+    """Лемматизация текста с удалением стоп-слов."""
+    doc = nlp(text)
+    return ' '.join([token.lemma_ for token in doc if token.lemma_ not in stopwords])
+
+sorted_messages['lemmatized_text'] = sorted_messages['cleaned_text'].apply(lemmatize_text)
+
+def get_word_count(user):
+    """Возвращает количество слов для пользователя."""
+    user_df = sorted_messages[sorted_messages['from'] == user]
+    return sum(len(text.split()) for text in user_df['lemmatized_text'])
+
+def get_top_words(user, n=100):
+    """Возвращает топ N слов для пользователя."""
+    user_df = sorted_messages[sorted_messages['from'] == user]
+    words = ' '.join(user_df['lemmatized_text']).split()
+    return Counter(words).most_common(n)
+
+def get_users_above_threshold(threshold):
+    """Возвращает пользователей, у которых количество слов превышает порог."""
+    users = sorted_messages['from'].unique()
+    return [user for user in users if get_word_count(user) >= threshold]
+
+def generate_wordcloud_for_user(name=None):
+    """Генерирует облако слов для пользователя или всего чата."""
+    if name:
+        user_df = sorted_messages[sorted_messages['from'] == name]
+        unique_ids = user_df['from_id'].unique()
+
+        if len(unique_ids) == 1:
+            user_text = ' '.join(user_df['lemmatized_text'])
+        else:
+            print(f"Найдено несколько ID для имени {name}: {unique_ids}")
+            selected_id = input("Введите ID для генерации облака слов: ")
+            user_text = ' '.join(user_df[user_df['from_id'] == selected_id]['lemmatized_text'])
+    else:
+        user_text = ' '.join(sorted_messages['lemmatized_text'])
+
+    wordcloud = WordCloud(width=800, height=400, background_color='white').generate(user_text)
+    
+    # Визуализация облака слов
+    plt.figure(figsize=(10, 7))
+    plt.imshow(wordcloud, interpolation='bilinear')
+    plt.axis('off')
+    plt.show()
+
+    # Вывод топ-100 слов в таблице
+    top_words = Counter(user_text.split()).most_common(100)
+    df = pd.DataFrame(top_words, columns=['Word', 'Frequency'])
+    print(df)
+
+def compare_users():
+    """Сравнивает топовые слова двух пользователей."""
+    threshold = int(input("Введите пороговое значение количества слов для учета: "))
+    
+    eligible_users = get_users_above_threshold(threshold)
+    if not eligible_users:
+        print(f"Нет пользователей, написавших больше {threshold} слов.")
+        return
+
+    print(f"Пользователи, написавшие более {threshold} слов: {', '.join(eligible_users)}")
+
+    user1 = input("Введите имя первого пользователя из списка выше: ")
+    user2 = input("Введите имя второго пользователя из списка выше: ")
+    
+    top_words_user1 = set(word[0] for word in get_top_words(user1))
+    top_words_user2 = set(word[0] for word in get_top_words(user2))
+
+    common_words = top_words_user1.intersection(top_words_user2)
+
+    print(f"\nОбщие слова: {', '.join(common_words)}")
+    print(f"Процент совпадений: {len(common_words) / 100 * 100}%")
+
+# Вызов функций:
+action = input("Выберите действие: \n1. Облако слов\n2. Сравнить пользователей\n")
+
+if action == "1":
+    name_input = input("Введите имя пользователя (или оставьте поле пустым для всего чата): ")
+    generate_wordcloud_for_user(name_input if name_input.strip() else None)
+elif action == "2":
+    compare_users()
